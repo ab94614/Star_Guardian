@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>星燈守望者</title>
+<style>
+  body{margin:0;background:#0b0d1a;color:#eee;font-family:sans-serif;text-align:center}
+  h1{margin:12px 0 4px;color:#ffd36b}
+  #lobby{max-width:420px;margin:20px auto;padding:20px;background:#161a33;border-radius:12px}
+  button,input{font-size:18px;padding:8px 14px;margin:6px;border-radius:8px;border:0}
+  button{background:#ffb347;cursor:pointer}
+  input{width:110px;text-align:center}
+  #game{display:none}
+  canvas{background:#111;border:2px solid #333;max-width:100%}
+  #info{min-height:24px;color:#9fd}
+</style>
+</head>
+<body>
+<h1>🔥 星燈守望者</h1>
+<div id="lobby">
+  <div id="menu">
+    <button onclick="createRoom()">建立房間</button>
+    <div>或輸入房間代碼：</div>
+    <input id="code" maxlength="4" placeholder="4位數">
+    <button onclick="joinRoom()">加入</button>
+  </div>
+  <div id="wait" style="display:none">
+    <div>房間代碼：<b id="roomCode" style="font-size:32px;color:#ffd36b"></b></div>
+    <div id="plist"></div>
+    <button id="startBtn" onclick="startGame()" style="display:none">開始遊戲</button>
+  </div>
+  <div id="status" style="color:#f88"></div>
+</div>
+
+<div id="game">
+  <div id="info"></div>
+  <canvas id="cv" width="800" height="500"></canvas>
+  <div>移動：WASD / 方向鍵　｜　快捷訊息：1「這裡！」 2「等我」 3「小心！」</div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+// ===== 關卡資料 =====
+const W=800,H=500,PS=24,SPEED=180;
+const COLORS=['#ff9d3c','#4cc3ff','#5de07a','#ffe14d'];
+const LEVELS=[
+  { title:'第一關：迷霧森林 — 兩人同時踩亮兩塊石板，門才會打開',
+    spawn:{x:50,y:238}, linger:2500,
+    walls:[{x:380,y:0,w:20,h:200},{x:380,y:300,w:20,h:200}],
+    plates:[{x:260,y:90},{x:260,y:410}],
+    doors:[{x:380,y:200,w:20,h:100,plates:[0,1]}],
+    exit:{x:640,y:190,w:110,h:120} },
+  { title:'第二關：鏡面洞窟 — 接力開門，動作要快！',
+    spawn:{x:40,y:238}, linger:2500,
+    walls:[{x:250,y:0,w:20,h:200},{x:250,y:300,w:20,h:200},
+           {x:520,y:0,w:20,h:200},{x:520,y:300,w:20,h:200}],
+    plates:[{x:150,y:50},{x:150,y:450},{x:400,y:50},{x:400,y:450}],
+    doors:[{x:250,y:200,w:20,h:100,plates:[0,1]},
+           {x:520,y:200,w:20,h:100,plates:[2,3]}],
+    exit:{x:660,y:190,w:110,h:120} }
+];
+
+// ===== 全域狀態 =====
+let peer, isHost=false, myId=null, conns={}, hostConn=null;
+let state={phase:'lobby',level:0,players:{},plates:[],doors:[],msg:''};
+let inputs={host:{dx:0,dy:0}};
+let lastOn=[]; // 壓力板最後被踩的時間（只在房主使用）
+const $=id=>document.getElementById(id);
+const status=t=>$('status').textContent=t;
+
+// ===== 連線 =====
+function createRoom(){
+  const code=String(Math.floor(1000+Math.random()*9000));
+  peer=new Peer('starlamp-'+code);
+  peer.on('open',()=>{
+    isHost=true; myId='host';
+    addPlayer('host');
+    showWait(code);
+    $('startBtn').style.display='inline-block';
+  });
+  peer.on('error',e=>status('錯誤：'+e.type+'（可再試一次）'));
+  peer.on('connection',c=>{
+    c.on('open',()=>{
+      if(state.phase!=='lobby'||Object.keys(state.players).length>=4){c.close();return;}
+      conns[c.peer]=c; addPlayer(c.peer); inputs[c.peer]={dx:0,dy:0};
+      c.send({t:'hello',id:c.peer});
+      broadcast();
+    });
+    c.on('data',d=>{
+      if(d.t==='in') inputs[c.peer]={dx:d.dx,dy:d.dy};
+      if(d.t==='say') say(c.peer,d.txt);
+    });
+    c.on('close',()=>{delete conns[c.peer];delete state.players[c.peer];delete inputs[c.peer];broadcast();renderLobby();});
+  });
+}
+function joinRoom(){
+  const code=$('code').value.trim(); if(!code) return;
+  peer=new Peer();
+  peer.on('open',()=>{
+    hostConn=peer.connect('starlamp-'+code,{reliable:false});
+    hostConn.on('open',()=>{showWait(code);status('');});
+    hostConn.on('data',d=>{
+      if(d.t==='hello') myId=d.id;
+      if(d.t==='state'){state=d.s;onState();}
+    });
+    hostConn.on('close',()=>status('與房主斷線'));
+  });
+  peer.on('error',e=>status('找不到房間或連線失敗：'+e.type));
+}
+function broadcast(){
+  const msg={t:'state',s:state};
+  for(const id in conns) if(conns[id].open) conns[id].send(msg);
+}
+function showWait(code){
+  $('menu').style.display='none'; $('wait').style.display='block';
+  $('roomCode').textContent=code; renderLobby();
+}
+function renderLobby(){
+  $('plist').innerHTML=Object.values(state.players).map(p=>
+    `<div style="color:${p.c}">● ${p.n}</div>`).join('');
+}
+function onState(){
+  if(state.phase==='lobby') renderLobby();
+  else { $('lobby').style.display='none'; $('game').style.display='block'; }
+}
+
+// ===== 房主邏輯 =====
+function addPlayer(id){
+  const i=Object.keys(state.players).length;
+  state.players[id]={x:50,y:238,c:COLORS[i],n:'玩家'+(i+1),say:'',sayUntil:0};
+  renderLobby();
+}
+function startGame(){
+  if(Object.keys(state.players).length<2){status('至少需要 2 人（可開兩個分頁測試）');return;}
+  loadLevel(0); $('lobby').style.display='none'; $('game').style.display='block';
+}
+function loadLevel(n){
+  const L=LEVELS[n]; state.level=n; state.phase='play'; state.msg=L.title;
+  let k=0;
+  for(const id in state.players){
+    state.players[id].x=L.spawn.x; state.players[id].y=L.spawn.y+(k++-1.5)*30;
+  }
+  state.plates=L.plates.map(()=>false);
+  state.doors=L.doors.map(()=>false);
+  lastOn=L.plates.map(()=>-1e9);
+  broadcast();
+}
+const hit=(a,b)=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
+function say(id,txt){const p=state.players[id];if(p){p.say=txt;p.sayUntil=performance.now()+2000;}}
+
+function hostUpdate(dt){
+  if(state.phase!=='play') return;
+  const L=LEVELS[state.level], now=performance.now();
+  const solids=()=>[...L.walls,...L.doors.filter((d,i)=>!state.doors[i])];
+  for(const id in state.players){
+    const p=state.players[id], inp=inputs[id]||{dx:0,dy:0};
+    let {dx,dy}=inp; const len=Math.hypot(dx,dy)||1;
+    dx=dx/len*SPEED*dt; dy=dy/len*SPEED*dt;
+    let nx=Math.max(0,Math.min(W-PS,p.x+dx));
+    if(!solids().some(s=>hit({x:nx,y:p.y,w:PS,h:PS},s))) p.x=nx;
+    let ny=Math.max(0,Math.min(H-PS,p.y+dy));
+    if(!solids().some(s=>hit({x:p.x,y:ny,w:PS,h:PS},s))) p.y=ny;
+    if(p.say&&now>p.sayUntil) p.say='';
+  }
+  // 壓力板
+  L.plates.forEach((pl,i)=>{
+    const on=Object.values(state.players).some(p=>Math.hypot(p.x+PS/2-pl.x,p.y+PS/2-pl.y)<28);
+    if(on) lastOn[i]=now;
+    state.plates[i]=on;
+  });
+  // 門：所有相關壓力板在 linger 時間內都被踩過 → 開門
+  L.doors.forEach((d,i)=>{
+    state.doors[i]=d.plates.every(pi=>now-lastOn[pi]<L.linger);
+  });
+  // 過關：所有人都在出口
+  const all=Object.values(state.players);
+  if(all.every(p=>hit({x:p.x,y:p.y,w:PS,h:PS},L.exit))){
+    if(state.level+1<LEVELS.length) loadLevel(state.level+1);
+    else {state.phase='win';state.msg='🌅 黎明來臨！星燈塔重新亮起，你們通關了！';}
+  }
+}
+
+// ===== 輸入 =====
+const keys={};
+addEventListener('keydown',e=>{
+  keys[e.key.toLowerCase()]=true;
+  const m={'1':'這裡！','2':'等我','3':'小心！'}[e.key];
+  if(m){ if(isHost) say('host',m); else hostConn&&hostConn.open&&hostConn.send({t:'say',txt:m}); }
+  if(e.key.startsWith('Arrow')) e.preventDefault();
+});
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+function readInput(){
+  return {
+    dx:(keys['d']||keys['arrowright']?1:0)-(keys['a']||keys['arrowleft']?1:0),
+    dy:(keys['s']||keys['arrowdown']?1:0)-(keys['w']||keys['arrowup']?1:0)
+  };
+}
+
+// ===== 繪圖 =====
+const cv=$('cv'), ctx=cv.getContext('2d');
+const dark=document.createElement('canvas'); dark.width=W; dark.height=H;
+const dctx=dark.getContext('2d');
+
+function draw(){
+  ctx.fillStyle='#1d2a24'; ctx.fillRect(0,0,W,H);
+  if(state.phase==='lobby'){return;}
+  const L=LEVELS[Math.min(state.level,LEVELS.length-1)];
+  // 出口
+  ctx.fillStyle='rgba(255,230,120,.35)';
+  ctx.fillRect(L.exit.x,L.exit.y,L.exit.w,L.exit.h);
+  ctx.fillStyle='#ffe99a'; ctx.font='16px sans-serif';
+  ctx.fillText('星燈出口',L.exit.x+20,L.exit.y+65);
+  // 牆
+  ctx.fillStyle='#4a4f5e'; L.walls.forEach(w=>ctx.fillRect(w.x,w.y,w.w,w.h));
+  // 門
+  L.doors.forEach((d,i)=>{
+    ctx.fillStyle=state.doors[i]?'rgba(120,255,160,.25)':'#a0522d';
+    ctx.fillRect(d.x,d.y,d.w,d.h);
+  });
+  // 壓力板
+  L.plates.forEach((p,i)=>{
+    ctx.beginPath(); ctx.arc(p.x,p.y,24,0,7);
+    ctx.fillStyle=state.plates[i]?'#7dffb0':'#8888aa'; ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.stroke();
+  });
+  // 玩家
+  const now=performance.now();
+  for(const id in state.players){
+    const p=state.players[id];
+    ctx.fillStyle=p.c; ctx.fillRect(p.x,p.y,PS,PS);
+    ctx.strokeStyle=id===myId?'#fff':'#000'; ctx.strokeRect(p.x,p.y,PS,PS);
+    ctx.fillStyle='#fff'; ctx.font='12px sans-serif'; ctx.fillText(p.n,p.x-4,p.y-6);
+    if(p.say){ctx.fillStyle='#fff';ctx.fillRect(p.x-10,p.y-34,70,20);
+      ctx.fillStyle='#000';ctx.fillText(p.say,p.x-4,p.y-20);}
+  }
+  // 黑暗與光（挖洞）
+  dctx.globalCompositeOperation='source-over';
+  dctx.clearRect(0,0,W,H);
+  dctx.fillStyle='rgba(5,6,15,0.88)'; dctx.fillRect(0,0,W,H);
+  dctx.globalCompositeOperation='destination-out';
+  for(const id in state.players){
+    const p=state.players[id], cx=p.x+PS/2, cy=p.y+PS/2;
+    const g=dctx.createRadialGradient(cx,cy,10,cx,cy,150);
+    g.addColorStop(0,'rgba(0,0,0,1)'); g.addColorStop(1,'rgba(0,0,0,0)');
+    dctx.fillStyle=g; dctx.beginPath(); dctx.arc(cx,cy,150,0,7); dctx.fill();
+  }
+  ctx.drawImage(dark,0,0);
+  $('info').textContent=state.msg;
+}
+
+// ===== 主迴圈 =====
+let last=performance.now(), sendT=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-last)/1000); last=t; sendT+=dt;
+  const inp=readInput();
+  if(isHost){
+    inputs.host=inp;
+    hostUpdate(dt);
+    if(sendT>0.05){sendT=0;broadcast();}
+  } else if(hostConn&&hostConn.open&&sendT>0.05){
+    sendT=0; hostConn.send({t:'in',dx:inp.dx,dy:inp.dy});
+  }
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
