@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>星燈守望者</title>
+<style>
+  body{margin:0;background:#0b0d1a;color:#eee;font-family:sans-serif;text-align:center;-webkit-user-select:none;user-select:none}
+  h1{margin:10px 0 4px;color:#ffd36b;font-size:24px}
+  #lobby{max-width:420px;margin:20px auto;padding:20px;background:#161a33;border-radius:12px}
+  button,input{font-size:18px;padding:8px 14px;margin:6px;border-radius:8px;border:0}
+  button{background:#ffb347;cursor:pointer}
+  input{width:110px;text-align:center}
+  #game{display:none}
+  canvas{background:#111;border:2px solid #333;max-width:100%;touch-action:none}
+  #info{min-height:22px;color:#9fd;font-size:14px;padding:0 6px}
+  #me{min-height:24px;color:#ffd36b;font-size:15px;font-weight:bold;padding:0 6px}
+  #help{font-size:13px;color:#aaa}
+  #touch{display:none}
+  @media (pointer:coarse){#touch{display:block}#help{display:none}}
+  #joy{position:fixed;left:18px;bottom:22px;width:130px;height:130px;border-radius:50%;
+       background:rgba(255,255,255,.12);border:2px solid rgba(255,255,255,.3);touch-action:none}
+  #knob{position:absolute;left:45px;top:45px;width:40px;height:40px;border-radius:50%;background:rgba(255,200,100,.85)}
+  #btns{position:fixed;right:14px;bottom:26px;display:flex;flex-direction:column;gap:10px;align-items:flex-end}
+  #btns button{width:92px;height:70px;border-radius:50%;opacity:.88;touch-action:none;margin:0;font-size:16px}
+  #bRole{background:#7fb4ff;height:48px!important;border-radius:24px!important}
+
+  #dlg{display:none;position:fixed;left:0;right:0;bottom:0;top:0;z-index:10;
+     background:rgba(0,0,0,.6);align-items:flex-end;justify-content:center}
+#dlgBox{width:min(720px,94%);margin-bottom:24px;padding:16px 20px;text-align:left;
+        background:#161a33;border:2px solid #ffd36b;border-radius:12px}
+#dlgName{color:#ffd36b;font-weight:bold;margin-bottom:6px}
+#dlgText{font-size:18px;line-height:1.6;min-height:56px}
+#dlgBtn{float:right;margin:4px 0 0}
+#dlgWait{color:#9fd;font-size:13px;clear:both}
+#chap{color:#ffd36b;font-size:22px;margin-bottom:10px;text-align:center}
+
+canvas{image-rendering:pixelated}
+#menu button{display:block;margin:8px auto;width:220px}
+
+</style>
+</head>
+<body>
+<h1>🔥 星燈守望者</h1>
+<div id="lobby">
+<div id="menu">
+  <button onclick="startSolo(false)">🎮 單人模式</button>
+  <button onclick="startSolo(true)">📂 讀取存檔（單人）</button>
+  <hr style="border-color:#333">
+  <button onclick="createRoom()">建立房間（多人）</button>
+  <div>或輸入房間代碼：</div>
+  <input id="code" maxlength="4" placeholder="4位數" inputmode="numeric">
+  <button onclick="joinRoom()" style="display:inline-block;width:auto">加入</button>
+</div>
+
+  <div id="wait" style="display:none">
+    <div>房間代碼：<b id="roomCode" style="font-size:32px;color:#ffd36b"></b></div>
+    <div id="plist"></div>
+    <button id="startBtn" onclick="startGame()" style="display:none">開始遊戲</button>
+    <button id="loadBtn" onclick="startGame(true)" style="display:none">📂 讀取存檔開始</button>
+  </div>
+  <div id="status" style="color:#f88"></div>
+</div>
+
+<div id="game">
+  <div id="info"></div>
+  <div id="me"></div>
+  <canvas id="cv" width="800" height="500"></canvas>
+  <div id="help">移動：WASD/方向鍵 ｜ 技能：空白鍵 ｜ 換角色：Q ｜ 快捷訊息：1「這裡！」2「等我」3「小心！」</div>
+  <button onclick="toggleMute(this)" style="font-size:13px;padding:2px 8px">🔊</button>
+</div>
+
+<div id="dlg">
+  <div id="dlgBox">
+    <div id="chap"></div>
+    <div id="dlgName"></div>
+    <div id="dlgText"></div>
+    <button id="dlgBtn" onclick="doNext()">繼續 ▶</button>
+    <div id="dlgWait"></div>
+  </div>
+</div>
+
+
+<div id="touch">
+  <div id="joy"><div id="knob"></div></div>
+  <div id="btns">
+    <button id="bRole">換角色</button>
+    <button id="bSkill">技能</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+// ===== 常數與資料 =====
+const W=800,H=500,PS=24,BASE_SPEED=170;
+const COLORS=['#ff9d3c','#4cc3ff','#5de07a','#ffe14d'];
+const ROLES=[
+  {n:'執燈者',i:'🔥',cd:7,desc:'閃耀：3秒大光圈，照出隱藏石板並震退暗影'},
+  {n:'折光者',i:'🪞',cd:8,desc:'靠近鏡子按技能＝旋轉鏡子；其他地方＝留下光印'},
+  {n:'護盾者',i:'🛡️',cd:8,desc:'守護：4秒無敵護盾，擋住暗影'},
+  {n:'疾行者',i:'⚡',cd:3,desc:'衝刺：瞬間加速，移動本來就較快'}
+];
+// 鏡子 s:0 = "/"  s:1 = "\"
+const LEVELS=[
+  { title:'第一關：迷霧森林 — 同時踩亮兩塊石板，門才會打開',
+    spawn:{x:50,y:238}, linger:2500,
+    walls:[{x:380,y:0,w:20,h:200},{x:380,y:300,w:20,h:200}],
+    plates:[{x:260,y:90},{x:260,y:410}],
+    doors:[{x:380,y:200,w:20,h:100,plates:[0,1]}],
+    enemies:[],
+    exit:{x:640,y:190,w:110,h:120} },
+  { title:'第二關：鏡面洞窟 — 讓折光者轉動鏡子，把光束導向水晶！',
+    spawn:{x:40,y:238}, linger:2500,
+    walls:[{x:380,y:0,w:20,h:200},{x:380,y:300,w:20,h:200},
+           {x:620,y:0,w:20,h:200},{x:620,y:300,w:20,h:200}],
+    plates:[],
+    doors:[{x:380,y:200,w:20,h:100,plates:[],crystals:[0]},
+           {x:620,y:200,w:20,h:100,plates:[],crystals:[1]}],
+    emitters:[{x:40,y:100,dx:1,dy:0},{x:600,y:60,dx:-1,dy:0}],
+    mirrors:[{x:250,y:100,s:0},{x:250,y:400,s:0},{x:500,y:60,s:1}],
+    crystals:[{x:340,y:400},{x:500,y:420}],
+    enemies:[],
+    exit:{x:660,y:190,w:110,h:120} },
+  { title:'第三關：暗影之橋 — 北邊有隱藏石板（用「閃耀」照出來），小心暗影！',
+    spawn:{x:40,y:238}, linger:3000,
+    walls:[{x:380,y:0,w:20,h:200},{x:380,y:300,w:20,h:200}],
+    plates:[{x:200,y:60,hidden:true},{x:200,y:440}],
+    doors:[{x:380,y:200,w:20,h:100,plates:[0,1]}],
+    enemies:[{x:260,y:250},{x:520,y:140},{x:560,y:380}],
+    exit:{x:650,y:190,w:110,h:120} },
+    { title:'第四關：燈塔頂端 — 用兩道光束擊敗暗影之王！',
+      spawn:{x:40,y:250}, linger:2500,
+      walls:[], plates:[], doors:[],
+      emitters:[{x:40,y:60,dx:1,dy:0},{x:40,y:440,dx:1,dy:0}],
+      mirrors:[{x:400,y:60,s:1},{x:400,y:250,s:0},{x:700,y:440,s:1}],
+      crystals:[],
+      boss:{x:700,y:250},
+      enemies:[],
+      exit:null }
+
+];
+// ===== 劇情資料 =====
+const CHAPTERS=['序章・第一關：迷霧森林','第二關：鏡面洞窟','第三關：暗影之橋','終章・第四關：燈塔頂端'];
+const STORY=[
+  [ // 第一關
+    ['旁白','很久以前，世界由「星燈塔」照亮。直到暗影潮吞沒了大地。'],
+    ['旁白','燈塔熄滅了，只剩四枚星之碎片散落各處。你們是最後的守燈人。'],
+    ['🔥 執燈者','別怕黑，我的光能照亮前面的路。'],
+    ['⚡ 疾行者','前面有兩塊石板，要同時踩亮門才會開，我們分頭行動吧！']
+  ],
+  [ // 第二關
+    ['旁白','穿過森林，你們來到一座布滿水晶的洞窟。'],
+    ['🪞 折光者','這些鏡子可以轉動，靠近鏡子按技能就能改變光的方向。'],
+    ['🛡️ 護盾者','把光導向水晶，門才會開。光被擋住的話，門又會關上。'],
+    ['⚡ 疾行者','有人顧鏡子，有人趕快過去，別忘了互相喊話！']
+  ],
+  [ // 第三關
+    ['旁白','洞窟的盡頭是一座搖搖欲墜的長橋，橋下傳來暗影的低語。'],
+    ['🛡️ 護盾者','暗影怪會追著我們跑，被碰到就會被送回起點。'],
+    ['🔥 執燈者','北邊好像有隱藏的石板，我用「閃耀」把它照出來。'],
+    ['旁白','過了橋，就是星燈塔了。']
+  ],
+  [ // 第四關
+    ['旁白','你們終於登上燈塔頂端，暗影之王正等在那裡。'],
+    ['暗影之王','愚蠢的守燈人，光早就熄滅了。'],
+    ['🪞 折光者','他怕光！把兩面鏡子轉對，讓光束打中他。'],
+    ['🛡️ 護盾者','他腳下出現紅圈就快跑，不然就由我來擋！'],
+    ['🔥 執燈者','最後一戰了，大家一起把星燈點亮！']
+  ]
+
+];
+
+const ENDING='🌅 黎明來臨！星燈塔重新亮起，暗影退去。你們通關了，謝謝你們，守燈人！';
+// ===== 存檔 =====
+const SAVE_KEY='starlamp-save-v1';
+function saveGame(){
+  if(!isHost) return;
+  try{localStorage.setItem(SAVE_KEY,JSON.stringify({level:state.level,time:Date.now()}));}catch(e){}
+}
+function getSave(){ try{return JSON.parse(localStorage.getItem(SAVE_KEY));}catch(e){return null;} }
+
+// ===== 音效（Web Audio，不需要音檔）=====
+let AC=null, muted=false;
+function beep(f,d,type='square',v=0.05,slide=0){
+  if(muted) return;
+  try{
+    AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+    if(AC.state==='suspended') AC.resume();
+    const o=AC.createOscillator(), g=AC.createGain(), t=AC.currentTime;
+    o.type=type; o.frequency.setValueAtTime(f,t);
+    if(slide) o.frequency.linearRampToValueAtTime(Math.max(40,f+slide),t+d);
+    g.gain.setValueAtTime(v,t); g.gain.exponentialRampToValueAtTime(0.0001,t+d);
+    o.connect(g); g.connect(AC.destination); o.start(); o.stop(t+d);
+  }catch(e){}
+}
+const SFX={
+  skill:()=>beep(660,.15,'square',.05,400),
+  next:()=>beep(520,.06),
+  door:()=>{beep(392,.12);setTimeout(()=>beep(523,.12),120);setTimeout(()=>beep(659,.25),240);},
+  hurt:()=>beep(200,.3,'sawtooth',.06,-120),
+  hit:()=>beep(300,.08,'triangle',.06,-100),
+  start:()=>{beep(440,.1);setTimeout(()=>beep(660,.15),100);},
+  win:()=>[523,659,784,1047].forEach((f,i)=>setTimeout(()=>beep(f,.25),i*180))
+};
+function toggleMute(b){ muted=!muted; b.textContent=muted?'🔇':'🔊'; }
+
+// ===== 像素圖（8x8）=====
+const SPR_P=[ // o=玩家色 k=黑 w=白
+  '..oooo..',
+  '.oooooo.',
+  'oowkwkoo',
+  'oowwwwoo',
+  'oooooooo',
+  '.oooooo.',
+  '.oo..oo.',
+  '.kk..kk.'];
+const SPR_E=[ // 暗影怪：p=紫 r=紅眼
+  '..pppp..',
+  '.pppppp.',
+  'pprppprp',
+  'pppppppp',
+  'pppppppp',
+  'pppppppp',
+  'pp.pp.pp',
+  'p..pp..p'];
+function drawSpr(rows,x,y,s,col,stun){
+  for(let j=0;j<8;j++)for(let i=0;i<8;i++){
+    const c=rows[j][i]; if(c==='.') continue;
+    ctx.fillStyle=c==='o'?col:c==='k'?'#222':c==='w'?'#fff':c==='r'?(stun?'#aaa':'#ff4060'):(stun?'#6a5a8a':'#3a1860');
+    ctx.fillRect(x+i*s,y+j*s,s,s);
+  }
+}
+// 草地背景（只畫一次）
+const bg=document.createElement('canvas'); bg.width=W; bg.height=H;
+(function(){
+  const b=bg.getContext('2d'); b.fillStyle='#1d2a24'; b.fillRect(0,0,W,H);
+  for(let i=0;i<260;i++){
+    b.fillStyle=Math.random()<.5?'#233328':'#182219';
+    b.fillRect(Math.floor(Math.random()*W/8)*8,Math.floor(Math.random()*H/8)*8,8,8);
+  }
+})();
+
+// ===== 音效偵測（用狀態變化觸發，多人都聽得到）=====
+let pv={doors:[],phase:'',lv:-1,bhp:100,x:0,y:0};
+function watchSounds(){
+  if(state.phase==='lobby') return;
+  (state.doors||[]).forEach((d,i)=>{ if(d&&!pv.doors[i]) SFX.door(); });
+  pv.doors=(state.doors||[]).slice();
+  if(state.phase!==pv.phase){
+    if(state.phase==='win') SFX.win();
+    if(state.phase==='play') SFX.start();
+    if(state.phase==='win'&&isHost) try{localStorage.removeItem(SAVE_KEY);}catch(e){}
+    pv.phase=state.phase;
+  }
+  const me=state.players[myId];
+  if(me){
+    if(state.phase==='play'&&pv.lv===state.level&&Math.hypot(me.x-pv.x,me.y-pv.y)>150) SFX.hurt();
+    pv.x=me.x; pv.y=me.y; pv.lv=state.level;
+  }
+  if(state.boss){
+    if(state.boss.hp<pv.bhp-5){SFX.hit();pv.bhp=state.boss.hp;}
+    else if(state.boss.hp>pv.bhp) pv.bhp=state.boss.hp;
+  }
+}
+
+// ===== 全域狀態 =====
+let peer, isHost=false, myId=null, conns={}, hostConn=null;
+let state={phase:'lobby',level:0,players:{},plates:[],doors:[],marks:[],enemies:[],mirrors:[],beams:[],lit:[],msg:''};
+let inputs={host:{dx:0,dy:0}};
+let lastOn=[];
+const $=id=>document.getElementById(id);
+const status=t=>$('status').textContent=t;
+
+// ===== 連線 =====
+function createRoom(){
+  const code=String(Math.floor(1000+Math.random()*9000));
+  peer=new Peer('starlamp-'+code);
+  peer.on('open',()=>{
+    isHost=true; myId='host';
+    addPlayer('host');
+    showWait(code);
+    $('startBtn').style.display='inline-block';
+    $('loadBtn').style.display='inline-block';
+  });
+  peer.on('error',e=>status('錯誤：'+e.type+'（可再試一次）'));
+  peer.on('connection',c=>{
+    c.on('open',()=>{
+      if(state.phase!=='lobby'||Object.keys(state.players).length>=4){c.close();return;}
+      conns[c.peer]=c; addPlayer(c.peer); inputs[c.peer]={dx:0,dy:0};
+      c.send({t:'hello',id:c.peer});
+      broadcast();
+    });
+    c.on('data',d=>{
+      if(d.t==='in') inputs[c.peer]={dx:d.dx,dy:d.dy};
+      if(d.t==='say') say(c.peer,d.txt);
+      if(d.t==='skill') useSkill(c.peer);
+      if(d.t==='role') switchRole(c.peer);
+      if(d.t==='next') nextStory(c.peer);
+    });
+    c.on('close',()=>{delete conns[c.peer];delete state.players[c.peer];delete inputs[c.peer];broadcast();renderLobby();});
+  });
+}
+function joinRoom(){
+  const code=$('code').value.trim(); if(!code) return;
+  peer=new Peer();
+  peer.on('open',()=>{
+    hostConn=peer.connect('starlamp-'+code,{reliable:false});
+    hostConn.on('open',()=>{showWait(code);status('');});
+    hostConn.on('data',d=>{
+      if(d.t==='hello') myId=d.id;
+      if(d.t==='state'){state=d.s;onState();}
+    });
+    hostConn.on('close',()=>status('與房主斷線'));
+  });
+  peer.on('error',e=>status('找不到房間或連線失敗：'+e.type));
+}
+function broadcast(){
+  const msg={t:'state',s:state};
+  for(const id in conns) if(conns[id].open) conns[id].send(msg);
+}
+function showWait(code){
+  $('menu').style.display='none'; $('wait').style.display='block';
+  $('roomCode').textContent=code; renderLobby();
+}
+function renderLobby(){
+  $('plist').innerHTML=Object.values(state.players).map(p=>
+    `<div style="color:${p.c}">● ${p.n}　${ROLES[p.role].i}${ROLES[p.role].n}</div>`).join('');
+}
+function onState(){
+  if(state.phase==='lobby') renderLobby();
+  else { $('lobby').style.display='none'; $('game').style.display='block'; }
+}
+
+// ===== 房主邏輯 =====
+function addPlayer(id){
+  const i=Object.keys(state.players).length;
+  state.players[id]={x:50,y:238,c:COLORS[i],n:'玩家'+(i+1),role:i%4,
+    cd:0,flash:0,shield:0,dash:0,say:'',sayUntil:0};
+  renderLobby();
+}
+/*function startGame(){
+  if(Object.keys(state.players).length<2){status('至少需要 2 人（可開兩個分頁測試）');return;}
+  startStory(0); $('lobby').style.display='none'; $('game').style.display='block';
+}*/
+function startGame(load){
+  const s=load===true?getSave():null;
+  if(load===true&&!s){status('沒有存檔');return;}
+  $('lobby').style.display='none'; $('game').style.display='block';
+  if(s) loadLevel(s.level); else startStory(0);
+}
+function startSolo(load){
+  const s=load?getSave():null;
+  if(load&&!s){status('沒有存檔');return;}
+  isHost=true; myId='host'; state.solo=true;
+  addPlayer('host');
+  $('lobby').style.display='none'; $('game').style.display='block';
+  if(s) loadLevel(s.level); else startStory(0);
+}
+
+function loadLevel(n){
+  const L=LEVELS[n]; state.level=n; state.phase='play'; state.msg=L.title;
+  let k=0;
+  for(const id in state.players){
+    const p=state.players[id];
+    p.x=L.spawn.x; p.y=L.spawn.y+(k++-1.5)*30;
+    p.cd=0;p.flash=0;p.shield=0;p.dash=0;
+  }
+  state.plates=L.plates.map(()=>false);
+  state.doors=L.doors.map(()=>false);
+  state.marks=[];
+  state.enemies=L.enemies.map(e=>({x:e.x,y:e.y,stun:0}));
+  state.mirrors=(L.mirrors||[]).map(m=>m.s);
+  state.beams=[]; state.lit=(L.crystals||[]).map(()=>false);
+  lastOn=L.plates.map(()=>-1e9);
+  saveGame();
+  state.boss=L.boss?{x:L.boss.x,y:L.boss.y,hp:100,max:100,t:5,atk:8,warn:null}:null;
+  state.bossHits=0;
+  broadcast();
+}
+function startStory(n){
+  state.phase='story'; state.level=n; state.story={i:0,ready:{}};
+  state.msg=''; state.beams=[]; state.enemies=[]; state.marks=[];
+  broadcast();
+}
+function nextStory(id){
+  if(state.phase!=='story') return;
+  state.story.ready[id]=true;
+  const all=Object.keys(state.players).every(k=>state.story.ready[k]);
+  if(all){
+    state.story.ready={}; state.story.i++;
+    if(state.story.i>=STORY[state.level].length){ loadLevel(state.level); return; }
+  }
+  broadcast();
+}
+
+
+const hit=(a,b)=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
+function say(id,txt){const p=state.players[id];if(p){p.say=txt;p.sayUntil=performance.now()+2000;}}
+
+function switchRole(id){
+  const p=state.players[id]; if(!p) return;
+  p.role=(p.role+1)%4; p.cd=0;
+  if(state.phase==='lobby') renderLobby();
+  broadcast();
+}
+function useSkill(id){
+  const p=state.players[id];
+  if(!p||state.phase!=='play'||p.cd>0) return;
+  const cx=p.x+PS/2, cy=p.y+PS/2;
+  if(p.role===1){
+    const L=LEVELS[state.level], ms=L.mirrors||[];
+    let best=-1,bd=70;
+    ms.forEach((m,j)=>{const d=Math.hypot(m.x-cx,m.y-cy);if(d<bd){bd=d;best=j;}});
+    if(best>=0){
+      state.mirrors[best]^=1; p.cd=0.5;
+      p.say='轉動鏡子'; p.sayUntil=performance.now()+1000;
+      return;
+    }
+    p.cd=ROLES[1].cd;
+    state.marks.push({x:cx,y:cy,t:6});
+    if(state.marks.length>2) state.marks.shift();
+    return;
+  }
+  p.cd=ROLES[p.role].cd;
+  if(p.role===0) p.flash=3;
+  else if(p.role===2) p.shield=4;
+  else if(p.role===3) p.dash=0.25;
+}
+
+// 光束追蹤：沿直線每 4px 前進，碰到鏡子就反射
+function traceBeams(L){
+  const emitters=L.emitters||[], mirrors=L.mirrors||[], crystals=L.crystals||[];
+  const solids=[...L.walls,...L.doors.filter((d,i)=>!state.doors[i])];
+  const beams=[], lit=crystals.map(()=>false);
+  state.bossHits=0;
+  for(const e of emitters){
+    const pts=[{x:e.x,y:e.y}];
+    let x=e.x,y=e.y,dx=e.dx,dy=e.dy,lastM=-1;
+    for(let i=0;i<700;i++){
+      x+=dx*4; y+=dy*4;
+      if(x<0||x>W||y<0||y>H) break;
+      if(state.boss&&Math.hypot(state.boss.x-x,state.boss.y-y)<32){state.bossHits++;break;}
+      let stop=false;
+      crystals.forEach((c,j)=>{ if(Math.hypot(c.x-x,c.y-y)<16){lit[j]=true;stop=true;} });
+      if(stop) break;
+      for(let j=0;j<mirrors.length;j++){
+        const m=mirrors[j];
+        const near=Math.abs(x-m.x)<10&&Math.abs(y-m.y)<10;
+        if(near&&j!==lastM){
+          x=m.x;y=m.y; pts.push({x,y});
+          const nd=state.mirrors[j]===0?{dx:-dy,dy:-dx}:{dx:dy,dy:dx};
+          dx=nd.dx;dy=nd.dy; lastM=j; break;
+        } else if(!near&&j===lastM) lastM=-1;
+      }
+    }
+    pts.push({x,y});
+    beams.push(pts);
+  }
+  state.beams=beams; state.lit=lit;
+}
+
+function hostUpdate(dt){
+  if(state.phase!=='play') return;
+  const L=LEVELS[state.level], now=performance.now();
+  const solids=()=>[...L.walls,...L.doors.filter((d,i)=>!state.doors[i])];
+  const plist=Object.values(state.players);
+
+  for(const id in state.players){
+    const p=state.players[id], inp=inputs[id]||{dx:0,dy:0};
+    p.cd=Math.max(0,p.cd-dt); p.flash=Math.max(0,p.flash-dt);
+    p.shield=Math.max(0,p.shield-dt); p.dash=Math.max(0,p.dash-dt);
+    let {dx,dy}=inp; const len=Math.hypot(dx,dy);
+    if(len>1){dx/=len;dy/=len;}
+    let sp=BASE_SPEED*(p.role===3?1.25:1);
+    if(p.dash>0) sp=520;
+    dx*=sp*dt; dy*=sp*dt;
+    let nx=Math.max(0,Math.min(W-PS,p.x+dx));
+    if(!solids().some(s=>hit({x:nx,y:p.y,w:PS,h:PS},s))) p.x=nx;
+    let ny=Math.max(0,Math.min(H-PS,p.y+dy));
+    if(!solids().some(s=>hit({x:p.x,y:ny,w:PS,h:PS},s))) p.y=ny;
+    if(p.say&&now>p.sayUntil) p.say='';
+  }
+  state.marks.forEach(m=>m.t-=dt);
+  state.marks=state.marks.filter(m=>m.t>0);
+
+  // 暗影怪
+  for(const e of state.enemies){
+    if(e.stun>0){e.stun-=dt;}
+    else{
+      let best=null,bd=280;
+      for(const p of plist){const d=Math.hypot(p.x+PS/2-e.x,p.y+PS/2-e.y);if(d<bd){bd=d;best=p;}}
+      if(best){
+        e.x+=(best.x+PS/2-e.x)/bd*85*dt; e.y+=(best.y+PS/2-e.y)/bd*85*dt;
+      }
+    }
+    for(const p of plist){
+      const cx=p.x+PS/2, cy=p.y+PS/2;
+      const d=Math.hypot(cx-e.x,cy-e.y)||1;
+      if(p.flash>0 && d<340) e.stun=Math.max(e.stun,0.3);
+      if(d<22 && e.stun<=0){
+        if(p.shield>0){
+          e.stun=1.2; e.x-=(cx-e.x)/d*40; e.y-=(cy-e.y)/d*40;
+        } else {
+          p.x=L.spawn.x; p.y=L.spawn.y; p.say='被暗影吞沒了！'; p.sayUntil=now+2000;
+          e.stun=1.5;
+        }
+      }
+    }
+  }
+
+  traceBeams(L);
+
+  L.plates.forEach((pl,i)=>{
+    const on=plist.some(p=>Math.hypot(p.x+PS/2-pl.x,p.y+PS/2-pl.y)<28)
+          || state.marks.some(m=>Math.hypot(m.x-pl.x,m.y-pl.y)<28);
+    if(on) lastOn[i]=now;
+    state.plates[i]=on;
+  });
+  L.doors.forEach((d,i)=>{
+state.doors[i]=(d.plates||[]).every(pi=>now-lastOn[pi]<L.linger*(plist.length===1?2.4:1))
+                 &&(d.crystals||[]).every(ci=>state.lit[ci]);
+  });
+      // ===== Boss 邏輯 =====
+    if(L.boss&&state.boss){
+      const b=state.boss;
+      b.hp=Math.max(0,b.hp-(state.bossHits||0)*10*dt);
+      b.t-=dt;
+      if(b.t<=0){
+        if(state.enemies.length<4){ b.t=6; state.enemies.push({x:b.x,y:b.y,stun:0}); }
+        else b.t=2;
+      }
+      b.atk-=dt;
+      if(b.atk<=0&&!b.warn){
+        const tp=plist[Math.floor(Math.random()*plist.length)];
+        b.warn={x:tp.x+PS/2,y:tp.y+PS/2,t:1.5}; b.atk=9;
+      }
+      if(b.warn){
+        b.warn.t-=dt;
+        if(b.warn.t<=0){
+          for(const p of plist){
+            if(Math.hypot(p.x+PS/2-b.warn.x,p.y+PS/2-b.warn.y)<80&&p.shield<=0){
+              p.x=L.spawn.x; p.y=L.spawn.y; p.say='被暗影衝擊！'; p.sayUntil=now+2000;
+            }
+          }
+          b.warn=null;
+        }
+      }
+      if(b.hp<=0){ state.phase='win'; state.msg=ENDING; return; }
+    }
+    // 過關（沒有出口的 Boss 關不判斷）
+    if(L.exit&&plist.every(p=>hit({x:p.x,y:p.y,w:PS,h:PS},L.exit))){
+
+if(state.level+1<LEVELS.length) startStory(state.level+1);
+else {state.phase='win';state.msg=ENDING;}
+  }
+}
+
+// ===== 輸入 =====
+const keys={}; let joy={dx:0,dy:0};
+function doSkill(){SFX.skill(); if(isHost) useSkill('host'); else if(hostConn&&hostConn.open) hostConn.send({t:'skill'}); }
+function doRole(){ if(isHost) switchRole('host'); else if(hostConn&&hostConn.open) hostConn.send({t:'role'}); }
+addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(!keys[k]){
+    if(k===' '||k==='enter'){
+      if(state.phase==='story') doNext();
+      else if(k===' ') doSkill();
+    }
+    if(k==='q') doRole();
+  }
+  keys[k]=true;
+  const m={'1':'這裡！','2':'等我','3':'小心！'}[e.key];
+  if(m){ if(isHost) say('host',m); else hostConn&&hostConn.open&&hostConn.send({t:'say',txt:m}); }
+  if(e.key.startsWith('Arrow')||e.key===' ') e.preventDefault();
+});
+
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+
+function doNext(){
+  SFX.next();
+  if(isHost) nextStory('host');
+  else if(hostConn&&hostConn.open) hostConn.send({t:'next'});
+}
+
+
+function readInput(){
+  let dx=(keys['d']||keys['arrowright']?1:0)-(keys['a']||keys['arrowleft']?1:0);
+  let dy=(keys['s']||keys['arrowdown']?1:0)-(keys['w']||keys['arrowup']?1:0);
+  if(joy.dx||joy.dy){dx=joy.dx;dy=joy.dy;}
+  return {dx,dy};
+}
+
+(function(){
+  const el=$('joy'), knob=$('knob'); let pid=null;
+  function upd(e){
+    const r=el.getBoundingClientRect(), R=r.width/2;
+    let vx=(e.clientX-(r.left+R))/R, vy=(e.clientY-(r.top+R))/R;
+    const l=Math.hypot(vx,vy); if(l>1){vx/=l;vy/=l;}
+    knob.style.left=(45+vx*45)+'px'; knob.style.top=(45+vy*45)+'px';
+    joy=(Math.hypot(vx,vy)<0.2)?{dx:0,dy:0}:{dx:vx,dy:vy};
+  }
+  el.addEventListener('pointerdown',e=>{pid=e.pointerId;el.setPointerCapture(pid);upd(e);e.preventDefault();});
+  el.addEventListener('pointermove',e=>{if(e.pointerId===pid)upd(e);});
+  const end=e=>{if(e.pointerId!==pid)return;pid=null;joy={dx:0,dy:0};knob.style.left='45px';knob.style.top='45px';};
+  el.addEventListener('pointerup',end); el.addEventListener('pointercancel',end);
+  $('bSkill').addEventListener('pointerdown',e=>{doSkill();e.preventDefault();});
+  $('bRole').addEventListener('pointerdown',e=>{doRole();e.preventDefault();});
+  document.addEventListener('contextmenu',e=>e.preventDefault());
+})();
+
+// ===== 繪圖 =====
+const cv=$('cv'), ctx=cv.getContext('2d');
+const dark=document.createElement('canvas'); dark.width=W; dark.height=H;
+const dctx=dark.getContext('2d');
+
+function draw(){
+ctx.drawImage(bg,0,0);
+if(state.phase==='lobby') return;
+
+// 劇情／結局：顯示對話框，不畫遊戲場景
+const dlg=$('dlg');
+if(state.phase==='story'||state.phase==='win'){
+  ctx.fillStyle='#0b0d1a'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#ffd36b'; ctx.font='bold 28px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(state.phase==='win'?'🌅 星燈塔':'🔥 星燈守望者',W/2,H/2);
+  ctx.textAlign='left';
+  dlg.style.display='flex';
+  if(state.phase==='story'){
+    const line=STORY[state.level][state.story.i]||['',''];
+    $('chap').textContent=CHAPTERS[state.level];
+    $('dlgName').textContent=line[0];
+    $('dlgText').textContent=line[1];
+    const n=Object.keys(state.players).length, r=Object.keys(state.story.ready).length;
+    const me=state.story.ready[myId];
+    $('dlgBtn').style.display=me?'none':'inline-block';
+    $('dlgWait').textContent=me?`等待其他玩家（${r}/${n}）…`:`已確認 ${r}/${n} 人　（空白鍵／Enter 也可繼續）`;
+  } else {
+    $('chap').textContent='— 終章 —';
+    $('dlgName').textContent='旁白';
+    $('dlgText').textContent=ENDING;
+    $('dlgBtn').style.display='none';
+    $('dlgWait').textContent='';
+  }
+  return;
+}
+dlg.style.display='none';
+
+  const L=LEVELS[Math.min(state.level,LEVELS.length-1)];
+  const plist=Object.values(state.players);
+  const revealed=plist.some(p=>p.flash>0);
+
+  if(L.exit){
+  ctx.fillStyle='rgba(255,230,120,.35)';
+  ctx.fillRect(L.exit.x,L.exit.y,L.exit.w,L.exit.h);
+  ctx.fillStyle='#ffe99a'; ctx.font='16px sans-serif';
+  ctx.fillText('星燈出口',L.exit.x+20,L.exit.y+65);
+}
+  ctx.fillStyle='#4a4f5e'; L.walls.forEach(w=>ctx.fillRect(w.x,w.y,w.w,w.h));
+  L.doors.forEach((d,i)=>{
+    ctx.fillStyle=state.doors[i]?'rgba(120,255,160,.25)':'#a0522d';
+    ctx.fillRect(d.x,d.y,d.w,d.h);
+  });
+  L.plates.forEach((p,i)=>{
+    if(p.hidden&&!revealed&&!state.plates[i]) return;
+    ctx.beginPath(); ctx.arc(p.x,p.y,24,0,7);
+    ctx.fillStyle=state.plates[i]?'#7dffb0':'#8888aa'; ctx.fill();
+    ctx.strokeStyle=p.hidden?'#ffd36b':'#fff'; ctx.stroke();
+  });
+  (state.marks||[]).forEach(m=>{
+    ctx.beginPath(); ctx.arc(m.x,m.y,16+Math.sin(performance.now()/150)*3,0,7);
+    ctx.fillStyle='rgba(100,200,255,.6)'; ctx.fill();
+    ctx.strokeStyle='#bff'; ctx.stroke();
+  });
+(state.enemies||[]).forEach(e=>{
+  drawSpr(SPR_E,e.x-16,e.y-16,4,'',e.stun>0);
+});
+  for(const id in state.players){
+    const p=state.players[id];
+    if(p.shield>0){
+      ctx.beginPath(); ctx.arc(p.x+PS/2,p.y+PS/2,26,0,7);
+      ctx.fillStyle='rgba(100,255,150,.25)'; ctx.fill();
+      ctx.strokeStyle='#6f9'; ctx.lineWidth=2; ctx.stroke(); ctx.lineWidth=1;
+    }
+drawSpr(SPR_P,p.x,p.y,3,p.c);
+if(id===myId){ ctx.strokeStyle='#fff'; ctx.strokeRect(p.x-1,p.y-1,PS+2,PS+2); }
+ctx.fillStyle='#fff'; ctx.font='12px sans-serif';
+ctx.fillText(ROLES[p.role].i+p.n,p.x-8,p.y-6);
+    if(p.say){ctx.fillStyle='#fff';ctx.fillRect(p.x-10,p.y-36,Math.max(70,p.say.length*13),20);
+      ctx.fillStyle='#000';ctx.fillText(p.say,p.x-4,p.y-22);}
+  }
+  // 黑暗與光
+  dctx.globalCompositeOperation='source-over';
+  dctx.clearRect(0,0,W,H);
+  dctx.fillStyle='rgba(5,6,15,0.9)'; dctx.fillRect(0,0,W,H);
+  dctx.globalCompositeOperation='destination-out';
+  for(const id in state.players){
+    const p=state.players[id], cx=p.x+PS/2, cy=p.y+PS/2;
+    const R=p.flash>0?380:(p.role===0?220:140);
+    const g=dctx.createRadialGradient(cx,cy,10,cx,cy,R);
+    g.addColorStop(0,'rgba(0,0,0,1)'); g.addColorStop(1,'rgba(0,0,0,0)');
+    dctx.fillStyle=g; dctx.beginPath(); dctx.arc(cx,cy,R,0,7); dctx.fill();
+  }
+  (state.marks||[]).forEach(m=>{
+    const g=dctx.createRadialGradient(m.x,m.y,5,m.x,m.y,90);
+    g.addColorStop(0,'rgba(0,0,0,.9)'); g.addColorStop(1,'rgba(0,0,0,0)');
+    dctx.fillStyle=g; dctx.beginPath(); dctx.arc(m.x,m.y,90,0,7); dctx.fill();
+  });
+  ctx.drawImage(dark,0,0);
+    // Boss 與預警圈（畫在黑暗之上）
+    if(L.boss&&state.boss){
+      const b=state.boss;
+      if(b.warn){
+        ctx.beginPath(); ctx.arc(b.warn.x,b.warn.y,80,0,7);
+        ctx.fillStyle='rgba(255,40,60,'+(0.15+0.25*Math.abs(Math.sin(performance.now()/120)))+')';
+        ctx.fill(); ctx.strokeStyle='#f45'; ctx.stroke();
+      }
+      ctx.beginPath(); ctx.arc(b.x,b.y,34,0,7);
+      ctx.fillStyle='#1a0830'; ctx.fill();
+      ctx.strokeStyle='#c060ff'; ctx.lineWidth=3; ctx.stroke(); ctx.lineWidth=1;
+      ctx.fillStyle='#ff3050';
+      ctx.fillRect(b.x-14,b.y-8,9,9); ctx.fillRect(b.x+5,b.y-8,9,9);
+      // 血條
+      ctx.fillStyle='#333'; ctx.fillRect(200,14,400,16);
+      ctx.fillStyle='#c060ff'; ctx.fillRect(200,14,400*b.hp/b.max,16);
+      ctx.strokeStyle='#fff'; ctx.strokeRect(200,14,400,16);
+      ctx.fillStyle='#fff'; ctx.font='13px sans-serif'; ctx.textAlign='center';
+      ctx.fillText('暗影之王 '+Math.ceil(b.hp)+' / '+b.max,W/2,27); ctx.textAlign='left';
+    }
+
+  // 發光器、光束、水晶、鏡子（畫在黑暗之上）
+  (L.emitters||[]).forEach(e=>{
+    ctx.fillStyle='#ffd36b'; ctx.fillRect(e.x-10,e.y-10,20,20);
+    ctx.fillStyle='#000'; ctx.font='14px sans-serif';
+    ctx.fillText(e.dx>0?'▶':e.dx<0?'◀':e.dy>0?'▼':'▲',e.x-6,e.y+5);
+  });
+  ctx.save();
+  ctx.shadowColor='#fff3a0'; ctx.shadowBlur=12;
+  ctx.strokeStyle='#fffbd0'; ctx.lineWidth=4; ctx.lineJoin='round';
+  (state.beams||[]).forEach(pts=>{
+    ctx.beginPath(); pts.forEach((q,i)=>i?ctx.lineTo(q.x,q.y):ctx.moveTo(q.x,q.y)); ctx.stroke();
+  });
+  ctx.restore();
+  (L.crystals||[]).forEach((c,j)=>{
+    const on=state.lit&&state.lit[j];
+    ctx.beginPath();
+    ctx.moveTo(c.x,c.y-16);ctx.lineTo(c.x+12,c.y);ctx.lineTo(c.x,c.y+16);ctx.lineTo(c.x-12,c.y);ctx.closePath();
+    ctx.fillStyle=on?'#7ff6ff':'#35566a'; ctx.fill();
+    ctx.strokeStyle=on?'#fff':'#8ab'; ctx.lineWidth=2; ctx.stroke(); ctx.lineWidth=1;
+  });
+  (L.mirrors||[]).forEach((m,j)=>{
+    const s=state.mirrors&&state.mirrors[j]!==undefined?state.mirrors[j]:m.s;
+    ctx.strokeStyle='#bfe9ff'; ctx.lineWidth=6; ctx.lineCap='round';
+    ctx.beginPath();
+    if(s===0){ctx.moveTo(m.x-13,m.y+13);ctx.lineTo(m.x+13,m.y-13);}
+    else{ctx.moveTo(m.x-13,m.y-13);ctx.lineTo(m.x+13,m.y+13);}
+    ctx.stroke(); ctx.lineWidth=1; ctx.lineCap='butt';
+    ctx.beginPath(); ctx.arc(m.x,m.y,20,0,7); ctx.strokeStyle='rgba(191,233,255,.3)'; ctx.stroke();
+  });
+
+  $('info').textContent=state.msg;
+  const me=state.players[myId];
+  if(me){
+    const R=ROLES[me.role];
+    $('me').textContent=`${R.i} ${R.n}｜`+(me.cd>0?`冷卻 ${me.cd.toFixed(1)} 秒`:'技能就緒！')+`｜${R.desc}`;
+  }
+}
+
+// ===== 主迴圈 =====
+let last=performance.now(), sendT=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-last)/1000); last=t; sendT+=dt;
+  const inp=readInput();
+  if(isHost){
+    inputs.host=inp;
+    hostUpdate(dt);
+    if(sendT>0.05){sendT=0;broadcast();}
+  } else if(hostConn&&hostConn.open&&sendT>0.05){
+    sendT=0; hostConn.send({t:'in',dx:inp.dx,dy:inp.dy});
+  }
+  draw();
+  watchSounds();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
